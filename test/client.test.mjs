@@ -197,20 +197,40 @@ const s2 = sectionRange(sample, 2);
 assert.ok(sample.slice(s2.start, s2.end).includes('### 子节'), '2 级节的区间包含它下面的 3 级节');
 assert.equal(sectionRange(sample, 3).end, sample.length, '最后一个 3 级节延伸到文末');
 
-// 新建一节：文末追加、序号正确、占位标题的选区落在本节切片内。
+// 新建一节：文末追加、级别跟随最后一个标题、占位标题的选区落在本节切片内。
 const { appendSection } = mod.__test;
 const bare = appendSection('');
-assert.equal(bare.text, '## 新的一节\n\n');
+assert.equal(bare.text, '# 新的一节\n\n', '空文档用 1 级标题');
 assert.equal(bare.index, 0);
+assert.equal(bare.selectStart, 2);
+assert.equal(bare.selectEnd, 2 + '新的一节'.length);
 
+// 全用 # 分节的笔记：新建还是 #，否则会被上一个 # 节吃掉。
+const hashAdded = appendSection('# 第一篇\n内容\n');
+assert.equal(hashAdded.text, '# 第一篇\n内容\n\n# 新的一节\n\n');
+assert.equal(hashAdded.index, 1);
+assert.equal(hashAdded.selectStart, 2);
+
+// 「壳 + 子项」结构（# 索引 下面挂 ##）：新建仍是 ##，与上一节同级。
 const appended = appendSection('## A\n内容');
 assert.equal(appended.text, '## A\n内容\n\n## 新的一节\n\n');
 assert.equal(appended.index, 1);
 assert.equal(appended.selectStart, 3);
 assert.equal(appended.selectEnd, 3 + '新的一节'.length);
 
+// 上一节是 ### 时，接着同级往文末加。
+assert.equal(appendSection('# A\n\n### 细节\n内容').text, '# A\n\n### 细节\n内容\n\n### 新的一节\n\n');
+
 // 已有尾随空行时不重复叠加，避免越建越多空行。
 assert.equal(appendSection('## A\n内容\n\n\n').text, '## A\n内容\n\n## 新的一节\n\n');
+
+// 级别判定：只认 1-3 级，没有标题时退回 1 级。
+const { sectionLevel } = mod.__test;
+assert.equal(sectionLevel(''), 1);
+assert.equal(sectionLevel('正文而已'), 1);
+assert.equal(sectionLevel('# 索引\n\n## 提示词一'), 2);
+assert.equal(sectionLevel('# A\n\n# B'), 1);
+assert.equal(sectionLevel('## A\n\n### B'), 3);
 
 // 默认选中哪一节：唯一的 1 级标题若吃掉全篇，就当「壳」跳过。
 const { defaultSectionIndex } = mod.__test;
