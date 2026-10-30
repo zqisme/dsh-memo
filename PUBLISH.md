@@ -20,11 +20,12 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
 |---|---|
 | `package.json` | `dsh.bundle.patch`（profile 补丁）、`dsh.client`（浏览器半边）、`exports["./client"]` |
 | `cordis.patch.yml` | bundle 层：往 profile 名册里插入 `id: memo` / `name: dsh-memo` 一行 |
-| `lib/index.js` | Host 半边：一条 `/api/dsh-memo` 路由，读/写固定文件；自带回环 + 同源围栏；原子写 |
-| `lib/client.js` | 客户端半边：注册侧栏按钮 + 主面板；目录解析、单节编辑、自动保存、选区落地、显示偏好记忆 |
-| `test/host.test.mjs` | Host 自测：路由登记、读写往返、跨站/局域网拒绝、方法/载荷校验 |
-| `test/client.test.mjs` | 客户端自测：工厂格式、槽位注册、渲染一遍、`parseOutline` / `sectionRange` / `appendSection` |
+| `lib/index.js` | Host 半边：一条 `/api/dsh-memo` 路由，读/写固定文件；自带回环 + 同源围栏；原子写（0600）、软链写到真实目标 |
+| `lib/client.js` | 客户端半边：注册侧栏按钮 + 主面板；目录解析、单节编辑、自动保存、选区落地、显示偏好记忆、写请求串行 |
+| `test/host.test.mjs` | Host 自测：路由登记、读写往返、跨站/局域网拒绝、方法/载荷校验、落盘权限、符号链接 |
+| `test/client.test.mjs` | 客户端自测：工厂格式、槽位注册、默认单节与偏好记忆、新建定位、切片拼回、写串行、序号钳位 |
 | `tools/patch-profile.mjs` | 把包名写进 profile 的 `dsh.profile.bundles`（pnpm 只管 node_modules，不管这个） |
+| `.github/workflows/test.yml` | CI：ubuntu + windows × Node 20/24 跑两个自测文件（零依赖，不 install） |
 | `README.md` | 用户向说明：怎么用、数据在哪、设计取舍 |
 | `LICENSE` | MIT |
 
@@ -90,13 +91,16 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
 ## 4. 自测
 
 ```powershell
+npm test                     # = 下面两条，CI 也走这一条
 node --check lib/index.js
 node --check lib/client.js
-node test/host.test.mjs      # 路由 / 围栏 / 读写往返 / 载荷校验
-node test/client.test.mjs    # 工厂格式 / 槽位注册 / 渲染 / 三个纯函数
+node test/host.test.mjs      # 路由 / 围栏 / 读写往返 / 载荷校验 / 0600 / 软链
+node test/client.test.mjs    # 工厂格式 / 槽位 / 默认单节 / 新建定位 / 写串行 / 钳位
 ```
 
 两个脚本都不启动 DSH、不碰真实数据（Host 自测写系统临时目录）。
+`.github/workflows/test.yml` 在 ubuntu 与 windows × Node 20/24 上跑同一套 —— 符号链接
+那条用例在 Windows 上没开开发者模式时会自动跳过（打印一行提示），Linux 上一定跑。
 
 ## 5. 上传 GitHub
 
@@ -183,6 +187,17 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-memo" -Context 1,1
   演进过程记一下：0.1 写死 `##`，且永远追加在文末 —— 在全 `#` 的笔记里那个 `##` 会被
   上一个 `#` 节吃掉（`#` 的区间延伸到下一个 `#`），在 `##` 节里点新建又会掉出个 `#` 到最底下。
   0.4 起级别和位置都跟着选中行走，测试覆盖「选中 `##`」「选中顶层 `#` 壳」「没选中」三条路径。
+- **写请求串行**：同一浏览器里上一笔没落地就不发下一笔。两笔同时在途时服务端各自
+  `rename`，完成顺序不保证等于请求顺序，可能用旧内容覆盖新内容，而客户端两笔都算成功。
+  关页面时的 `keepalive` 不排队（那一刻要的是尽量发出去）。
+- **落盘 0600**：私人笔记不该让同机其他用户读到；`rename` 会把 mode 带到目标文件。
+  Windows 上 mode 基本被忽略，行为不变。
+- **支持软链**：`memo.md` 是符号链接时先 `realpath` 再写，否则 `rename` 会把链接顶掉，
+  按 README 建议的「软链到同步目录」会当场失效。断链直接 409，不吞。
+- **选中序号会钳位**（`clampSectionIndex`）：删标题后 `activeIndex` 可能越界，越界会让
+  `sectionRange` 返回 null，单节模式「悄悄退回整篇」—— 现在钳到最后一节。
+- **`sectionRange` 可以传已解析的目录**：面板里 `outline` 是 memo 的，传进去省掉每帧一次
+  全文扫描（1 MiB / 2 万标题实测 ~20ms 一次）。
 - **1 MiB 上限**，超了明确报错，不静默截断。
 - **路由在 token 门之外**，靠插件自己的回环 + 同源围栏保护（见契约第 7 条）。
 

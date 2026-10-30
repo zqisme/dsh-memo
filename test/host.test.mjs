@@ -5,7 +5,7 @@
  * 覆盖：路由登记、读/写往返、跨站与局域网拒绝、方法/载荷校验。
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -138,7 +138,37 @@ assert.equal(res.status, 413, '超过上限必须拒绝');
 res = await call({});
 assert.equal(res.json.content, '只有这一行');
 
-// 6. 卸载时路由要能被收回。
+// 6. 落盘权限：私人笔记不该让同机其他用户读到（POSIX 才有意义）。
+if (process.platform !== 'win32') {
+  const mode = (await stat(process.env['DSH_MEMO_FILE'])).mode & 0o777;
+  assert.equal(mode, 0o600, '备忘录应以 0600 落盘');
+}
+
+// 7. 符号链接：写到真实目标，链接本身不能被 rename 顶掉（否则同步就断了）。
+const realFile = join(workdir, 'real-memo.md');
+const linkFile = join(workdir, 'link-memo.md');
+await writeFile(realFile, '原始\n', 'utf8');
+let canSymlink = true;
+try {
+  await symlink(realFile, linkFile, 'file');
+} catch {
+  // Windows 上没开开发者模式 / 非管理员时建不了软链，跳过这条。
+  canSymlink = false;
+}
+if (canSymlink) {
+  const configured = process.env['DSH_MEMO_FILE'];
+  process.env['DSH_MEMO_FILE'] = linkFile;
+  res = await post('通过链接写入\n');
+  assert.equal(res.status, 200);
+  assert.equal(res.json.path, linkFile, '回给客户端的仍是配置里的路径');
+  assert.ok((await lstat(linkFile)).isSymbolicLink(), '链接必须还在');
+  assert.equal(await readFile(realFile, 'utf8'), '通过链接写入\n', '内容应落到真实目标');
+  process.env['DSH_MEMO_FILE'] = configured;
+} else {
+  console.log('  (跳过符号链接用例：当前环境不允许创建软链)');
+}
+
+// 8. 卸载时路由要能被收回。
 for (const dispose of disposers) if (typeof dispose === 'function') dispose();
 await rm(workdir, { recursive: true, force: true });
 

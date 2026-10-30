@@ -133,10 +133,12 @@ assert.ok(text.includes('+ 新建'), '没有目录时新建按钮应出现在标
 assert.ok(text.includes('"spacer"'), '标题行应有撑开左右的占位元素');
 
 // 载入 effect：fetch 返回固定内容后不应抛错。
+// 这里只要求「至少登记了四个」，不锁死个数 —— 以后加 effect 不该让这条先红，
+// 真正的行为断言在下面的用例里。
 hookIndex = 0;
 effects.length = 0;
 main.component({});
-assert.equal(effects.length, 4, '应登记载入、beforeunload、宽度监听、选区落地四个 effect');
+assert.ok(effects.length >= 4, '应登记载入、beforeunload、宽度监听、选区落地等 effect');
 const cleanups = effects.map((fn) => fn());
 await new Promise((resolve) => setTimeout(resolve, 10));
 for (const cleanup of cleanups) if (typeof cleanup === 'function') cleanup();
@@ -196,6 +198,17 @@ assert.ok(!t1.includes('## 提示词二'));
 const s2 = sectionRange(sample, 2);
 assert.ok(sample.slice(s2.start, s2.end).includes('### 子节'), '2 级节的区间包含它下面的 3 级节');
 assert.equal(sectionRange(sample, 3).end, sample.length, '最后一个 3 级节延伸到文末');
+
+// 传入已解析的目录时结果必须一样（面板正是这么复用的，省掉每帧一次全文扫描）。
+assert.deepEqual(sectionRange(sample, 1, parseOutline(sample)), sectionRange(sample, 1), '传目录与现解析应等价');
+assert.equal(sectionRange(sample, 99, parseOutline(sample)), null, '越界仍然返回 null');
+
+// 序号钳位：删标题会让 activeIndex 越界，越界就等于「悄悄退回整篇」。
+const { clampSectionIndex } = mod.__test;
+assert.equal(clampSectionIndex(5, 3), 2, '越界钳到最后一节');
+assert.equal(clampSectionIndex(2, 3), 2, '合法序号原样返回');
+assert.equal(clampSectionIndex(-1, 3), 0, '没选中当作第一节');
+assert.equal(clampSectionIndex(0, 0), 0, '没有标题时返回 0');
 
 // 新建一节：级别与位置都跟着「当前选中的那一节」，没选中才退回文末追加。
 const { insertSection } = mod.__test;
@@ -305,6 +318,16 @@ const findArea = (tree) => flatten(tree).find((n) => n.type === 'textarea');
 const findButton = (tree, label) => flatten(tree).find((n) => n.type === 'button' && (n.children || []).includes(label));
 const prefs = () => JSON.parse(globalThis.window.localStorage.getItem('dsh-memo:prefs') ?? '{}');
 
+/** 再渲染一次（不动 effect）：替身 React 不自动重渲染，手动来。 */
+function rerender() {
+  hookIndex = 0;
+  effects.length = 0;
+  return main.component({});
+}
+
+/** 等一拍：写请求现在排队发出，fetch 要到下一轮微任务才会被调用。 */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 /**
  * 跑一遍完整生命周期：清空 hook → 首渲染 → 跑 effect（拉取正文）→ 再渲染。
  * 替身 React 不会自动重渲染，所以这里手动来第二遍，拿到的才是载入后的树。
@@ -397,13 +420,12 @@ const outlineRow = flatten(tree2).find(
 );
 assert.ok(outlineRow, '目录里应能点到「提示词一」');
 outlineRow.props.onClick();
-hookIndex = 0;
-effects.length = 0;
-tree2 = main.component({});
+tree2 = rerender();
 
 postCalls = [];
 findButton(tree2, '+ 新建').props.onClick();
-assert.equal(postCalls.length, 1, '新建应立刻落盘一次');
+await settle();
+assert.equal(postCalls.length, 1, '新建应落盘一次');
 const posted = JSON.parse(postCalls[0].body).content;
 assert.ok(posted.includes('## 新的一节'), '选中 ## 时应新建 ##，不该是 #');
 assert.ok(posted.indexOf('## 新的一节') > posted.indexOf('## 提示词一'), '应插在选中节之后');
@@ -415,6 +437,7 @@ loadContent = shellDoc;
 tree2 = await renderLoaded();
 postCalls = [];
 findButton(tree2, '+ 新建').props.onClick();
+await settle();
 const postedDefault = JSON.parse(postCalls[0].body).content;
 assert.ok(postedDefault.includes('## 新的一节'), '默认落在 ## 节时就该新建 ##');
 assert.ok(
@@ -432,23 +455,76 @@ const topRow = flatten(tree2).find(
 );
 assert.ok(topRow, '目录里应能点到「建立索引?」');
 topRow.props.onClick();
-hookIndex = 0;
-effects.length = 0;
-tree2 = main.component({});
+tree2 = rerender();
 
 postCalls = [];
 findButton(tree2, '+ 新建').props.onClick();
+await settle();
 const postedChild = JSON.parse(postCalls[0].body).content;
 assert.ok(postedChild.indexOf('# 新的一节') > postedChild.indexOf('## 做什么'), '新节应在子节之后');
 assert.ok(postedChild.indexOf('# 新的一节') < postedChild.indexOf('# 备忘录'), '新节应在下一节之前');
 
-hookIndex = 0;
-effects.length = 0;
-tree2 = main.component({});
+tree2 = rerender();
 assert.equal(
   findArea(tree2).props.value,
   '# 新的一节\n\n',
   '新建后编辑区应停在新节上，而不是它前面的子节',
 );
+
+// 9) 删掉标题让选中序号越界时，单节视图要钳到最后一节，不能悄悄退回整篇。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# A\n\n甲\n\n# B\n\n乙\n\n# C\n\n丙\n';
+tree2 = await renderLoaded();
+const rowC = flatten(tree2).find(
+  (node) => node.props && node.props.title === 'C' && typeof node.props.onClick === 'function',
+);
+assert.ok(rowC, '目录里应能点到「C」');
+rowC.props.onClick();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# C\n\n丙\n', '先切到最后一节');
+
+// 把这一节整段删掉 → 目录只剩 2 条，而 activeIndex 还是 2。
+findArea(tree2).props.onChange({ target: { value: '' } });
+tree2 = rerender();
+assert.equal(
+  findArea(tree2).props.value,
+  '# B\n\n乙\n\n',
+  '序号越界时应钳到最后一节，而不是显示整篇',
+);
+
+// 10) 两笔保存串行：上一笔没落地，下一笔不会提前发出（否则 rename 可能倒序）。
+const originalFetch = globalThis.fetch;
+const sent = [];
+const releases = [];
+globalThis.fetch = (url, options = {}) => {
+  // 读请求（GET）照旧走替身；只接管写请求。
+  if (options.method !== 'POST') return originalFetch(url, options);
+  sent.push(JSON.parse(options.body).content);
+  return new Promise((resolve) => {
+    releases.push(() => resolve({ ok: true, status: 200, json: async () => ({ ok: true }) }));
+  });
+};
+
+loadContent = '';
+tree2 = await renderLoaded();
+findArea(tree2).props.onChange({ target: { value: 'A' } });
+findArea(tree2).props.onBlur();
+await settle();
+assert.equal(sent.length, 1, '第一笔应已发出');
+
+findArea(tree2).props.onChange({ target: { value: 'AB' } });
+findArea(tree2).props.onBlur();
+await settle();
+assert.equal(sent.length, 1, '上一笔没落地时，第二笔不该发出');
+
+releases[0]();
+await settle();
+await settle();
+assert.equal(sent.length, 2, '上一笔落地后才发第二笔');
+assert.equal(sent[1], 'AB', '第二笔带的是最新内容');
+
+releases[1]();
+await settle();
+globalThis.fetch = originalFetch;
 
 console.log('client.test.mjs: 全部通过');

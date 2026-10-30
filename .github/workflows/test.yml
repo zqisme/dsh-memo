@@ -1,0 +1,28 @@
+# 零依赖、零构建：不用 install，直接跑两个自测文件。
+# 两个平台都跑是因为 Host 半边有真实文件系统行为（rename 覆盖、权限、符号链接），
+# 而 Windows 和 POSIX 在「能不能建软链」「mode 有没有意义」上恰好不一样。
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: host 半边
+        run: node test/host.test.mjs
+      - name: 客户端半边
+        run: node test/client.test.mjs
