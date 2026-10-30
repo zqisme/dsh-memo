@@ -21,7 +21,7 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
 | `package.json` | `dsh.bundle.patch`（profile 补丁）、`dsh.client`（浏览器半边）、`exports["./client"]` |
 | `cordis.patch.yml` | bundle 层：往 profile 名册里插入 `id: memo` / `name: dsh-memo` 一行 |
 | `lib/index.js` | Host 半边：一条 `/api/dsh-memo` 路由，读/写固定文件；自带回环 + 同源围栏；原子写 |
-| `lib/client.js` | 客户端半边：注册侧栏按钮 + 主面板；目录解析、单节编辑、自动保存、选区落地 |
+| `lib/client.js` | 客户端半边：注册侧栏按钮 + 主面板；目录解析、单节编辑、自动保存、选区落地、显示偏好记忆 |
 | `test/host.test.mjs` | Host 自测：路由登记、读写往返、跨站/局域网拒绝、方法/载荷校验 |
 | `test/client.test.mjs` | 客户端自测：工厂格式、槽位注册、渲染一遍、`parseOutline` / `sectionRange` / `appendSection` |
 | `tools/patch-profile.mjs` | 把包名写进 profile 的 `dsh.profile.bundles`（pnpm 只管 node_modules，不管这个） |
@@ -169,6 +169,14 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-memo" -Context 1,1
 - **没有 Markdown 预览**：就是一个纯文本编辑框，要渲染看别的面板。
 - **单节编辑是切片视图**，不是真的折叠 DOM：编辑区显示 `全文.slice(该节起止)`，改动立刻拼回整篇，
   内存里只有一份真值。所以删掉标题行的 `## ` 会让那一节不再是独立节（内容不丢）。
+- **默认视角是「只看单节」**：点进面板先看一节，想通读点「看整篇」。这个选择记在浏览器
+  `localStorage` 的 `dsh-memo:prefs` 里（连同目录开合），所以只影响当前这个浏览器；
+  清站点数据就回到默认的单节。正文永远只在 `memo.md` 里，偏好里一个字都不存。
+- **默认落在哪一节**：一般是第一节；但 1 级标题在这个模型里会吃掉后面所有子节，若全篇
+  只有一个 `#` 级标题（`# 索引` 这种），它覆盖到文末，就按「整篇的壳」处理，默认跳到它
+  下面第一个 `##`（`defaultSectionIndex`，已进 `__test`）。否则默认单节和整篇长得一样。
+- **第一节带上文首前导**：标题之前那段字不属于任何一节，切片时并进第一节，
+  免得单节视图里「看不见但还在文件里」。所以第一节的切片起点可能是 0 而不是标题行。
 - **1 MiB 上限**，超了明确报错，不静默截断。
 - **路由在 token 门之外**，靠插件自己的回环 + 同源围栏保护（见契约第 7 条）。
 
