@@ -1,0 +1,5 @@
+# dsh-memo 的 bundle 层：把插件自己那一行插进 profile 的插件名册。
+# 行 id 保持稳定，重复安装/覆盖配置时不会长出第二行。
+- insert:
+    - id: memo
+      name: dsh-memo

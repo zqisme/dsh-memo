@@ -1,0 +1,14 @@
+# 依赖与运行时残留
+node_modules/
+pnpm-lock.yaml
+
+# 自测临时目录（Host 自测会写这里，用完自己删）
+_smoke/
+
+# 编辑器 / 系统垃圾
+.DS_Store
+Thumbs.db
+*.log
+*.bak
+
+# 注意：lib/ 必须提交 —— 它是手写产物，不是构建输出，没有构建步骤能重建它
