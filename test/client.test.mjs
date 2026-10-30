@@ -197,34 +197,57 @@ const s2 = sectionRange(sample, 2);
 assert.ok(sample.slice(s2.start, s2.end).includes('### 子节'), '2 级节的区间包含它下面的 3 级节');
 assert.equal(sectionRange(sample, 3).end, sample.length, '最后一个 3 级节延伸到文末');
 
-// 新建一节：文末追加、级别跟随最后一个标题、占位标题的选区落在本节切片内。
-const { appendSection } = mod.__test;
-const bare = appendSection('');
-assert.equal(bare.text, '# 新的一节\n\n', '空文档用 1 级标题');
+// 新建一节：级别与位置都跟着「当前选中的那一节」，没选中才退回文末追加。
+const { insertSection } = mod.__test;
+
+// 空文档 / 没有选中：1 级、追加到文末。
+const bare = insertSection('', -1);
+assert.equal(bare.text, '# 新的一节\n\n');
 assert.equal(bare.index, 0);
+assert.equal(bare.level, 1);
 assert.equal(bare.selectStart, 2);
 assert.equal(bare.selectEnd, 2 + '新的一节'.length);
 
-// 全用 # 分节的笔记：新建还是 #，否则会被上一个 # 节吃掉。
-const hashAdded = appendSection('# 第一篇\n内容\n');
-assert.equal(hashAdded.text, '# 第一篇\n内容\n\n# 新的一节\n\n');
-assert.equal(hashAdded.index, 1);
-assert.equal(hashAdded.selectStart, 2);
+// 没选中且已有标题：级别跟最后一个标题，位置在文末。
+const tailCase = insertSection('# 第一篇\n内容\n', -1);
+assert.equal(tailCase.text, '# 第一篇\n内容\n\n# 新的一节\n\n');
+assert.equal(tailCase.index, 1);
+assert.equal(tailCase.level, 1);
 
-// 「壳 + 子项」结构（# 索引 下面挂 ##）：新建仍是 ##，与上一节同级。
-const appended = appendSection('## A\n内容');
-assert.equal(appended.text, '## A\n内容\n\n## 新的一节\n\n');
-assert.equal(appended.index, 1);
-assert.equal(appended.selectStart, 3);
-assert.equal(appended.selectEnd, 3 + '新的一节'.length);
-
-// 上一节是 ### 时，接着同级往文末加。
-assert.equal(appendSection('# A\n\n### 细节\n内容').text, '# A\n\n### 细节\n内容\n\n### 新的一节\n\n');
+// 上一节是 ### 时兜底也跟着走。
+assert.equal(insertSection('# A\n\n### 细节\n内容', -1).text, '# A\n\n### 细节\n内容\n\n### 新的一节\n\n');
 
 // 已有尾随空行时不重复叠加，避免越建越多空行。
-assert.equal(appendSection('## A\n内容\n\n\n').text, '## A\n内容\n\n## 新的一节\n\n');
+assert.equal(insertSection('## A\n内容\n\n\n', -1).text, '## A\n内容\n\n## 新的一节\n\n');
 
-// 级别判定：只认 1-3 级，没有标题时退回 1 级。
+// 选中第一个 # 节 → 新节是同级的 #，插在它和下一节之间（不是文末）。
+const twoTop = '# A\n\n内容A\n\n# B\n\n内容B\n';
+const midTop = insertSection(twoTop, 0);
+assert.equal(midTop.text, '# A\n\n内容A\n\n# 新的一节\n\n# B\n\n内容B\n');
+assert.equal(midTop.index, 1);
+assert.equal(midTop.level, 1);
+
+// 选中 ## 节（最常见的场景）：新节是 ##，紧跟在它后面。
+const nested = '# 索引\n\n## 提示词一\n\n内容一\n\n## 提示词二\n\n内容二\n';
+const nestedIn = insertSection(nested, 1);
+assert.equal(nestedIn.text, '# 索引\n\n## 提示词一\n\n内容一\n\n## 新的一节\n\n## 提示词二\n\n内容二\n');
+assert.equal(nestedIn.index, 2);
+assert.equal(nestedIn.level, 2);
+assert.equal(nestedIn.selectStart, 3);
+assert.equal(nestedIn.selectEnd, 3 + '新的一节'.length);
+
+// 选中的是「壳」（区间到文末）：新节插在整棵子树后面，仍是同级。
+const shellTree = '# 索引\n\n## a\n\n甲\n\n## b\n\n乙\n';
+assert.equal(
+  insertSection(shellTree, 0).text,
+  '# 索引\n\n## a\n\n甲\n\n## b\n\n乙\n\n# 新的一节\n\n',
+  '选中 # 壳时新节应在它的子树之后，且同为 #',
+);
+
+// 序号越界当作没选中。
+assert.equal(insertSection(twoTop, 99).index, parseOutline(twoTop).length);
+
+// 级别兜底判定：只认 1-3 级，没有标题时退回 1 级。
 const { sectionLevel } = mod.__test;
 assert.equal(sectionLevel(''), 1);
 assert.equal(sectionLevel('正文而已'), 1);
@@ -354,6 +377,41 @@ assert.equal(
   findArea(tree2).props.value,
   '## 提示词一\n\n内容一\n\n',
   '壳级 # 索引 底下应直接落到第一个 ## 节',
+);
+
+// 6) 目录里选中某一节后点「+ 新建」：级别 / 位置都跟着选中的那一节走。
+//    这是「选中 ## 却新建出 # 并掉到文末」那个 bug 的回归测试。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = shellDoc;
+tree2 = await renderLoaded();
+const outlineRow = flatten(tree2).find(
+  (node) => node.props && node.props.title === '提示词一' && typeof node.props.onClick === 'function',
+);
+assert.ok(outlineRow, '目录里应能点到「提示词一」');
+outlineRow.props.onClick();
+hookIndex = 0;
+effects.length = 0;
+tree2 = main.component({});
+
+postCalls = [];
+findButton(tree2, '+ 新建').props.onClick();
+assert.equal(postCalls.length, 1, '新建应立刻落盘一次');
+const posted = JSON.parse(postCalls[0].body).content;
+assert.ok(posted.includes('## 新的一节'), '选中 ## 时应新建 ##，不该是 #');
+assert.ok(posted.indexOf('## 新的一节') > posted.indexOf('## 提示词一'), '应插在选中节之后');
+assert.ok(posted.indexOf('## 新的一节') < posted.indexOf('## 提示词二'), '应插在下一节之前，而不是文末');
+
+// 7) 单节模式下没点过目录也不要紧：新建跟着「面板上显示的那一节」走。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = shellDoc;
+tree2 = await renderLoaded();
+postCalls = [];
+findButton(tree2, '+ 新建').props.onClick();
+const postedDefault = JSON.parse(postCalls[0].body).content;
+assert.ok(postedDefault.includes('## 新的一节'), '默认落在 ## 节时就该新建 ##');
+assert.ok(
+  postedDefault.indexOf('## 新的一节') < postedDefault.indexOf('## 提示词二'),
+  '应紧跟在当前显示的那一节后面',
 );
 
 console.log('client.test.mjs: 全部通过');
