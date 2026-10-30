@@ -247,6 +247,14 @@ assert.equal(
 // 序号越界当作没选中。
 assert.equal(insertSection(twoTop, 99).index, parseOutline(twoTop).length);
 
+// 选中带子节的 #：新节排在整棵子树之后，序号必须跳过子节，不能只 +1。
+// （回归：曾经返回 picked + 1，于是新建后高亮/编辑区落到子节上。）
+const withChild = '# A\n\n## a1\n\n内容\n\n# B\n\n内容B\n';
+const skipped = insertSection(withChild, 0);
+assert.equal(skipped.index, 2, '带一个子节时应落在第 2 位');
+assert.equal(parseOutline(skipped.text)[skipped.index].text, '新的一节', '序号必须指向新节本身');
+assert.equal(skipped.level, 1, '新节级别仍是选中节的级别');
+
 // 级别兜底判定：只认 1-3 级，没有标题时退回 1 级。
 const { sectionLevel } = mod.__test;
 assert.equal(sectionLevel(''), 1);
@@ -412,6 +420,35 @@ assert.ok(postedDefault.includes('## 新的一节'), '默认落在 ## 节时就�
 assert.ok(
   postedDefault.indexOf('## 新的一节') < postedDefault.indexOf('## 提示词二'),
   '应紧跟在当前显示的那一节后面',
+);
+
+// 8) 选中「带子节的顶层节」再新建：目录高亮与编辑区都要落在**新节**上，
+//    而不是它的第一个子节（截图里那个「选中了 ## 做什么」的 bug）。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# 建立索引?\n\n## 做什么\n\n内容\n\n# 备忘录\n\n内容B\n';
+tree2 = await renderLoaded();
+const topRow = flatten(tree2).find(
+  (node) => node.props && node.props.title === '建立索引?' && typeof node.props.onClick === 'function',
+);
+assert.ok(topRow, '目录里应能点到「建立索引?」');
+topRow.props.onClick();
+hookIndex = 0;
+effects.length = 0;
+tree2 = main.component({});
+
+postCalls = [];
+findButton(tree2, '+ 新建').props.onClick();
+const postedChild = JSON.parse(postCalls[0].body).content;
+assert.ok(postedChild.indexOf('# 新的一节') > postedChild.indexOf('## 做什么'), '新节应在子节之后');
+assert.ok(postedChild.indexOf('# 新的一节') < postedChild.indexOf('# 备忘录'), '新节应在下一节之前');
+
+hookIndex = 0;
+effects.length = 0;
+tree2 = main.component({});
+assert.equal(
+  findArea(tree2).props.value,
+  '# 新的一节\n\n',
+  '新建后编辑区应停在新节上，而不是它前面的子节',
 );
 
 console.log('client.test.mjs: 全部通过');
