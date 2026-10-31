@@ -3,7 +3,7 @@
  *
  * 跑法：node test/client.test.mjs
  * 覆盖：模块表工厂格式、apply 里的两个槽位注册、面板能渲染出树而不抛错、
- *       默认「只看单节」与偏好记忆。
+ *       默认「只看单节」与偏好记忆、新建定位、写串行、离开再回来时回到上次那一节。
  *
  * 这里的 React 是**最小替身**：只够跑一遍渲染，验证 hook 顺序与元素结构，
  * 不验证真实交互（那要在 GUI 里点）。
@@ -287,6 +287,42 @@ assert.equal(defaultSectionIndex(flatDoc, parseOutline(flatDoc)), 0, '没有 1 �
 assert.equal(defaultSectionIndex('', []), 0, '没有标题时退回 0');
 assert.equal(defaultSectionIndex(sample, parseOutline(sample)), 1, '只有 # 索引 一个 1 级标题时也跳过它');
 
+// 「上次看的那一节」认不认得回来：标题文字是主键，序号只在文字没了时兜底。
+const { resolveSectionIndex } = mod.__test;
+const bookmarkDoc = '# A\n\n## 一\n\n## 二\n\n# B\n';
+assert.equal(resolveSectionIndex({ level: 1, text: 'B', index: 3 }, parseOutline(bookmarkDoc)), 3, '按文字认回来');
+
+// 在它前面插了一节：序号变了，文字还认得 —— 这正是只存序号会错的地方。
+const grownDoc = '# 新\n\n# A\n\n## 一\n\n## 二\n\n# B\n';
+assert.equal(
+  resolveSectionIndex({ level: 1, text: 'B', index: 3 }, parseOutline(grownDoc)),
+  4,
+  '前面多了一节也不影响，位置跟着文字走',
+);
+
+// 重名多条：取离原序号最近的那个。
+const dupDoc = parseOutline('## 备注\n\n甲\n\n## 备注\n\n乙\n');
+assert.equal(resolveSectionIndex({ level: 2, text: '备注', index: 1 }, dupDoc), 1, '重名时取离原序号最近的（后一条）');
+assert.equal(resolveSectionIndex({ level: 2, text: '备注', index: 0 }, dupDoc), 0, '重名时取离原序号最近的（前一条）');
+assert.equal(resolveSectionIndex({ text: '备注' }, dupDoc), 0, '没存序号时当作从 0 找起');
+
+// 级别不同的同名标题不算同一节：文字对不上就退回序号。
+assert.equal(
+  resolveSectionIndex({ level: 3, text: '备注', index: 2 }, parseOutline('## A\n\n## 备注\n\n## C\n')),
+  2,
+  '级别对不上时不该认成那个 ## 节',
+);
+
+// 标题改名 / 删掉：退回序号并钳进范围，落在附近而不是跳回最开头。
+assert.equal(resolveSectionIndex({ level: 1, text: '已删掉', index: 1 }, parseOutline('# A\n\n# B\n\n# C\n')), 1);
+assert.equal(resolveSectionIndex({ level: 1, text: '已删掉', index: 99 }, parseOutline('# A\n\n# B\n')), 1, '序号越界时钳到最后一节');
+
+// 认不出来的各种情况统一返回 -1，让调用处走 defaultSectionIndex。
+assert.equal(resolveSectionIndex(null, parseOutline(bookmarkDoc)), -1, '没存过');
+assert.equal(resolveSectionIndex({ level: 1, text: 'A' }, []), -1, '正文没有标题');
+assert.equal(resolveSectionIndex({}, parseOutline(bookmarkDoc)), -1, '书签是空的');
+assert.equal(resolveSectionIndex('坏数据', parseOutline(bookmarkDoc)), -1, '书签类型不对也不炸');
+
 // ——— 显示模式：默认「只看单节」，并把选择记住 ———
 
 /** 拼一个最小 localStorage：只实现本插件用到的那三个方法。 */
@@ -526,5 +562,52 @@ assert.equal(sent[1], 'AB', '第二笔带的是最新内容');
 releases[1]();
 await settle();
 globalThis.fetch = originalFetch;
+
+// 11) 离开面板再回来：应回到上次看的那一节，而不是第一节。
+//     每切一次界面主面板都会卸载重建，state 归零 —— 这是「总是回到第一项」的根因。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# A\n\n甲\n\n# B\n\n乙\n\n# C\n\n丙\n';
+tree2 = await renderLoaded();
+const rowB = flatten(tree2).find(
+  (node) => node.props && node.props.title === 'B' && typeof node.props.onClick === 'function',
+);
+assert.ok(rowB, '目录里应能点到「B」');
+rowB.props.onClick();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# B\n\n乙\n\n', '先切到 B 节');
+assert.deepEqual(prefs().section, { level: 1, text: 'B', index: 1 }, '换节应把书签写进偏好');
+
+tree2 = await renderLoaded();
+assert.equal(findArea(tree2).props.value, '# B\n\n乙\n\n', '再点进来应回到上次那一节');
+
+// 标题被改名（文字认不回来）时退回序号：还留在附近，不会跳回开头。
+loadContent = '# A\n\n甲\n\n# B 改名了\n\n乙\n\n# C\n\n丙\n';
+tree2 = await renderLoaded();
+assert.equal(findArea(tree2).props.value, '# B 改名了\n\n乙\n\n', '标题改名后应按序号落在原位置附近');
+
+// 显式选过「壳」级标题时也一样：用户自己点的，回来就还是它（不走默认跳过壳的规则）。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = shellDoc;
+tree2 = await renderLoaded();
+const rowShell = flatten(tree2).find(
+  (node) => node.props && node.props.title === '索引' && typeof node.props.onClick === 'function',
+);
+rowShell.props.onClick();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, shellDoc, '选中壳级标题时单节视图就是整篇');
+tree2 = await renderLoaded();
+assert.equal(findArea(tree2).props.value, shellDoc, '回来仍停在壳级标题上，不被默认规则拽去第一个子节');
+
+// 12) 新建一节后离开再回来：应停在新节上（书签跟着新建走）。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# 索引\n\n## 提示词一\n\n内容一\n\n## 提示词二\n\n内容二\n';
+tree2 = await renderLoaded();
+postCalls = [];
+findButton(tree2, '+ 新建').props.onClick();
+await settle();
+assert.equal(prefs().section.text, '新的一节', '新建后书签应指向新节');
+loadContent = JSON.parse(postCalls[0].body).content; // 假装已经落盘，再读回来
+tree2 = await renderLoaded();
+assert.equal(findArea(tree2).props.value, '## 新的一节\n\n', '再进来应停在新节上');
 
 console.log('client.test.mjs: 全部通过');
