@@ -130,7 +130,7 @@ tools/patch-profile.mjs  把包登记进 profile 的 dsh.profile.bundles
 
 **复用宿主的浏览器信任层。** `webServer` 本身不做鉴权（官方文档原话：*No
 server-wide authentication or origin policy*），所以每个请求先问
-`ctx.connection.requestRejection(req)`：Host（回环 / 监听器绑定 IP /
+`ctx.get('connection').requestRejection(req)`：Host（回环 / 监听器绑定 IP /
 `trustedHosts`）、`Origin`、`sec-fetch-site` 与 DSH 的签名登录 cookie 都由
 `dsh-client-connection` 统一判定。跨站页面改不动你的备忘录，
 `dsh web --host <局域网IP>` 时也不会再被「socket 必须回环」误挡。
