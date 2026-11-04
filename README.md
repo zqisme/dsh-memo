@@ -128,16 +128,19 @@ tools/patch-profile.mjs  把包登记进 profile 的 dsh.profile.bundles
 **路由没有路径参数。** 客户端不能告诉宿主「读哪个文件」——路径在服务端算好。
 没有路径参数就没有 `../` 穿越面，也没有「把根目录传宽一点」这类问题。
 
-**自己立围栏。** `webServer` 本身不做鉴权（官方文档原话：*No server-wide
-authentication or origin policy*），所以这条路由自己校验：socket 必须回环、
-`Host` 头必须指向回环、拒绝 `sec-fetch-site: cross-site`、`Origin` 必须同源。
-跨站页面因此改不动你的备忘录。
+**复用宿主的浏览器信任层。** `webServer` 本身不做鉴权（官方文档原话：*No
+server-wide authentication or origin policy*），所以每个请求先问
+`ctx.connection.requestRejection(req)`：Host（回环 / 监听器绑定 IP /
+`trustedHosts`）、`Origin`、`sec-fetch-site` 与 DSH 的签名登录 cookie 都由
+`dsh-client-connection` 统一判定。跨站页面改不动你的备忘录，
+`dsh web --host <局域网IP>` 时也不会再被「socket 必须回环」误挡。
+取不到 `connection` 服务时路由一律 503（fail closed），不退回弱校验。
 
-**但这条路由在 `dsh web` 的 token 门之外。** `/api/*` 的 token 校验由
-`@deepseek-ai/dsh-client-connection` 负责，本插件的路由直接挂在 `webServer` 上，
-所以本机进程（curl / 脚本）不带 token 也能读写这个文件。考虑到「本机进程本来就能
-直接读写 `~/.dsh/memo/memo.md`」，这个边界是一致的；但如果你以后把它改成写别处
-的敏感文件，记得先把这层补上。
+**这条路由现在在登录态之内。** 早期版本只自己校验回环 + 同源，因此本机
+curl / 脚本不带 token 也能读写；改用 `requestRejection` 之后，非 GUI 调用方
+必须持有该 authority 的浏览器会话 cookie（或合法的 API peer cookie）。
+本机进程本来就能直接读写 `~/.dsh/memo/memo.md`，所以这不改变实际信任边界，
+但把 LAN 监听时「同网段设备无凭据访问」的口子关上了。
 
 **原子写。** 先写同目录临时文件再 `rename`，中途失败不会留下半个备忘录。
 同一浏览器里的写请求是**串行**的：上一笔没落地不发下一笔，否则两次 `rename` 的完成
@@ -150,7 +153,7 @@ authentication or origin policy*），所以这条路由自己校验：socket �
 
 ```powershell
 npm test                    # 等价于下面两条，CI 也是这么跑的
-node test/host.test.mjs     # 路由登记、读写往返、围栏、载荷校验、0600、符号链接
+node test/host.test.mjs     # 路由登记、读写往返、宿主信任层、载荷校验、0600、符号链接
 node test/client.test.mjs   # 工厂格式、槽位注册、默认单节、回到上次那一节、新建定位、写串行、目录键盘可达
 ```
 

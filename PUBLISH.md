@@ -20,9 +20,9 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
 |---|---|
 | `package.json` | `dsh.bundle.patch`（profile 补丁）、`dsh.client`（浏览器半边）、`exports["./client"]` |
 | `cordis.patch.yml` | bundle 层：往 profile 名册里插入 `id: memo` / `name: dsh-memo` 一行 |
-| `lib/index.js` | Host 半边：一条 `/api/dsh-memo` 路由，读/写固定文件；自带回环 + 同源围栏；原子写（0600）、软链写到真实目标 |
+| `lib/index.js` | Host 半边：一条 `/api/dsh-memo` 路由，读/写固定文件；信任判定交给 `connection.requestRejection`；原子写（0600）、软链写到真实目标 |
 | `lib/client.js` | 客户端半边：注册侧栏按钮 + 主面板；目录解析、单节编辑、自动保存、选区落地、显示偏好记忆、写请求串行 |
-| `test/host.test.mjs` | Host 自测：路由登记、读写往返、跨站/局域网拒绝、方法/载荷校验、落盘权限、符号链接 |
+| `test/host.test.mjs` | Host 自测：路由登记、读写往返、宿主信任层拒绝/缺失/抛错、方法/载荷校验、落盘权限、符号链接 |
 | `test/client.test.mjs` | 客户端自测：工厂格式、槽位注册、默认单节与偏好记忆、书签恢复、新建定位、切片拼回、写串行、序号钳位 |
 | `tools/patch-profile.mjs` | 把包名写进 profile 的 `dsh.profile.bundles`（pnpm 只管 node_modules，不管这个） |
 | `.github/workflows/test.yml` | CI：ubuntu + windows × Node 20/24 跑两个自测文件（零依赖，不 install） |
@@ -72,9 +72,12 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
    handler 收原始的 `(req, res)`（Node 的 http 对象）。重复的 `(kind, path)` 会直接 throw。
 
 7. **`webServer` 没有任何鉴权/来源策略**（官方注释：*No server-wide authentication or origin policy*）。
-   它还会绕过 `dsh web` 的 URL token 门（那层归 `@deepseek-ai/dsh-client-connection` 管，只覆盖 `/api/*`）。
-   所以能写磁盘的路由**必须自己立围栏**：校验 socket 回环 + `Host` 头回环 + `sec-fetch-site` 非 cross-site
-   + `Origin` 与 `Host` 同源。`lib/index.js` 里的 `isTrusted()` 就是现成实现。
+   `dsh web` 的 URL token 门归 `@deepseek-ai/dsh-client-connection` 管，它只直接覆盖 `/api/*`
+   的共享通道。自挂一条 exact 路由时，要主动问它：`ctx.get('connection').requestRejection(req)`
+   返回 `undefined` 才继续；`401` = 没登录，`403` = Host/Origin/跨站围栏没过。
+   它接受的 Host 含**监听器绑定 IP / `trustedHosts`**，所以 `--host <局域网IP>` 可用；
+   千万别自己再写一份「socket 必须回环」——LAN 绑定时本机请求的 remoteAddress
+   就是那个 IP，会把正常页面挡掉。宿主接口缺失或抛错时 fail closed（503/403）。
 
 8. **宿主插件面**：`export const name` / `export const inject = []` / `export function apply(ctx)`。
    `webServer` 是可选依赖，用 `ctx.get('webServer')` 或 `ctx.inject(['webServer'], (sub) => …)` 惰性取 ——
@@ -203,7 +206,8 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-memo" -Context 1,1
 - **`sectionRange` 可以传已解析的目录**：面板里 `outline` 是 memo 的，传进去省掉每帧一次
   全文扫描（1 MiB / 2 万标题实测 ~20ms 一次）。
 - **1 MiB 上限**，超了明确报错，不静默截断。
-- **路由在 token 门之外**，靠插件自己的回环 + 同源围栏保护（见契约第 7 条）。
+- **路由复用宿主登录态**：`requestRejection` 提供 Host/Origin 围栏 + 签名 cookie，
+  LAN 绑定也可用；缺 `connection` 时关闭路由（见契约第 7 条）。
 
 ## 9. 给新会话的开工提示（可整段粘贴）
 
