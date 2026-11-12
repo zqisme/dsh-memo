@@ -71,11 +71,11 @@ assert.equal(routes[0].kind, 'exact');
  * @param {object} options - 方法、请求头、载荷、socket 地址。
  * @returns 可被 handler 消费的假请求。
  */
-function makeReq({ method = 'GET', headers = {}, body = '', remoteAddress = '192.168.124.2' } = {}) {
+function makeReq({ method = 'GET', headers = {}, body = '', remoteAddress = '192.168.124.2', url = '/api/dsh-memo' } = {}) {
   const payload = Buffer.from(body, 'utf8');
   return {
     method,
-    url: '/api/dsh-memo',
+    url,
     headers: { host: '192.168.124.2:3080', 'sec-fetch-site': 'same-origin', ...headers },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
@@ -205,6 +205,66 @@ if (canSymlink) {
 } else {
   console.log('  (跳过符号链接用例：当前环境不允许创建软链)');
 }
+
+// 9. 上一版：每次覆盖前把当前内容留成 <memo>.bak，只留一份。
+process.env['DSH_MEMO_FILE'] = join(workdir, 'backup-case', 'memo.md');
+const bakFile = join(workdir, 'backup-case', 'memo.md.bak');
+
+res = await post('第一版\n');
+assert.equal(res.status, 200);
+assert.equal(res.json.hasBackup, false, '第一次保存没有上一版');
+assert.equal((await call({})).json.hasBackup, false);
+
+res = await post('第二版\n');
+assert.equal(res.status, 200);
+assert.equal(res.json.hasBackup, true);
+assert.equal(await readFile(bakFile, 'utf8'), '第一版\n', '备份应保存覆盖前的内容');
+
+res = await post('第三版\n');
+assert.equal(await readFile(bakFile, 'utf8'), '第二版\n', '备份只留一份，随每次覆盖前移');
+
+// 读上一版：只读接口，不碰磁盘。
+res = await call({ url: '/api/dsh-memo?bak=1' });
+assert.equal(res.status, 200);
+assert.equal(res.json.exists, true);
+assert.equal(res.json.content, '第二版\n');
+assert.match(res.json.path, /memo\.md\.bak$/);
+// 正文不受影响。
+assert.equal((await call({})).json.content, '第三版\n');
+
+// 10. 冲突：客户端声明的那一版和磁盘不一致时拒绝，并把磁盘现值带回来。
+let current = (await call({})).json;
+res = await call({
+  method: 'POST',
+  body: JSON.stringify({ content: '我的版本\n', baseMtimeMs: current.mtimeMs - 5000 }),
+});
+assert.equal(res.status, 409, '基于旧版本写入必须拒绝');
+assert.equal(res.json.code, 'stale');
+assert.equal(res.json.content, '第三版\n', '409 要带回磁盘上的现值，客户端才有的选');
+assert.equal(await readFile(process.env['DSH_MEMO_FILE'], 'utf8'), '第三版\n', '拒绝时不能落盘');
+
+// 拿对版本号就能写，并且响应里的 mtime 是新的那一版。
+res = await call({
+  method: 'POST',
+  body: JSON.stringify({ content: '第四版\n', baseMtimeMs: current.mtimeMs }),
+});
+assert.equal(res.status, 200);
+assert.ok(res.json.mtimeMs >= current.mtimeMs, '响应要给出新的 mtime');
+assert.equal(await readFile(process.env['DSH_MEMO_FILE'], 'utf8'), '第四版\n');
+
+// 没声明版本的写入照旧放行（老客户端 / 刚打开还没读到 mtime）。
+res = await post('第五版\n');
+assert.equal(res.status, 200);
+
+// 文件被外部删掉后再带着旧版本号写：也算冲突，不能静默重建。
+await rm(process.env['DSH_MEMO_FILE']);
+res = await call({
+  method: 'POST',
+  body: JSON.stringify({ content: '重建\n', baseMtimeMs: current.mtimeMs }),
+});
+assert.equal(res.status, 409);
+assert.equal(res.json.mtimeMs, null, '文件已不在时 mtimeMs 为 null');
+assert.equal(res.json.content, null);
 
 // 8. 卸载时路由要能被收回。
 for (const dispose of disposers) if (typeof dispose === 'function') dispose();

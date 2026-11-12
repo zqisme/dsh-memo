@@ -26,15 +26,31 @@ globalThis.window = {
 /** fetch 替身：读到一份固定内容（具体内容由各用例改 loadContent）。 */
 let postCalls = [];
 let loadContent = '旧内容';
+/** POST 的裁定：null = 成功；否则按给定状态码与 JSON 体回。 */
+let postVerdict = null;
+/** GET 回的元数据：体积、上限、有没有上一版。 */
+let loadMeta = { size: 300, limit: 1024 * 1024, hasBackup: true, mtimeMs: 1700000000000 };
+
 globalThis.fetch = async (url, options = {}) => {
   if (options.method === 'POST') {
     postCalls.push({ url, body: options.body, keepalive: options.keepalive });
-    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if (postVerdict !== null) {
+      return { ok: false, status: postVerdict.status, json: async () => postVerdict.body };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, size: 300, mtimeMs: 1700000000001, hasBackup: true }) };
+  }
+  // `?bak=1` 读上一版：只要 exists + content 就够。
+  if (typeof url === 'string' && url.includes('bak=1')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, exists: true, content: '上一版内容', path: '/home/u/.dsh/memo/memo.md.bak', mtimeMs: 1600000000000 }),
+    };
   }
   return {
     ok: true,
     status: 200,
-    json: async () => ({ ok: true, exists: true, content: loadContent, path: '/home/u/.dsh/memo/memo.md' }),
+    json: async () => ({ ok: true, exists: true, content: loadContent, path: '/home/u/.dsh/memo/memo.md', ...loadMeta }),
   };
 };
 
@@ -609,5 +625,89 @@ assert.equal(prefs().section.text, '新的一节', '新建后书签应指向新�
 loadContent = JSON.parse(postCalls[0].body).content; // 假装已经落盘，再读回来
 tree2 = await renderLoaded();
 assert.equal(findArea(tree2).props.value, '## 新的一节\n\n', '再进来应停在新节上');
+
+// 13) 体积与「上一版」入口：服务端给的 size / limit / hasBackup 要落到页脚。
+loadMeta = { size: 900 * 1024, limit: 1024 * 1024, hasBackup: true, mtimeMs: 1700000000000 };
+loadContent = '# A\n\n甲\n';
+tree2 = await renderLoaded();
+assert.ok(JSON.stringify(tree2).includes('900 KB / 1.0 MiB'), '页脚应显示体积与上限');
+assert.ok(findButton(tree2, '上一版'), '有上一版时应给出恢复入口');
+
+// 服务端说没有上一版时不渲染那个入口（刚建文件的前两次保存就是这种情况）。
+loadMeta = { size: 10, limit: 1024 * 1024, hasBackup: false, mtimeMs: 1700000000000 };
+tree2 = await renderLoaded();
+assert.ok(!findButton(tree2, '上一版'), '没有备份时不该出现「上一版」');
+
+/**
+ * 跑一遍「不做清理」的完整载入：cleanup 会把 alive 置 false，而下面的用例要靠
+ * 状态更新断言，所以这里只跑 effect、不调它们的清理函数。
+ */
+async function renderLive() {
+  hookState.length = 0;
+  hookIndex = 0;
+  effects.length = 0;
+  main.component({});
+  effects.map((fn) => fn());
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  hookIndex = 0;
+  effects.length = 0;
+  return main.component({});
+}
+
+// 14) 冲突：保存被 409 `stale` 拒绝时出现冲突条，而不是笼统的「保存失败」。
+postVerdict = {
+  status: 409,
+  body: { error: '备忘录在别处被修改过', code: 'stale', content: '磁盘上的版本', mtimeMs: 1700000009999 },
+};
+loadContent = '# A\n\n甲\n';
+tree2 = await renderLive();
+findArea(tree2).props.onChange({ target: { value: '# A\n\n本地改的\n' } });
+findArea(tree2).props.onBlur();
+await settle();
+await settle();
+tree2 = rerender();
+assert.ok(JSON.stringify(tree2).includes('文件在别处被改过'), '应提示磁盘上的版本被改过');
+assert.ok(JSON.stringify(tree2).includes('与磁盘不一致'), '标题行状态应说明不一致，而不是「保存失败」');
+
+// 15) 「用我的覆盖」：把基准版本换成磁盘那一版再写，避免自己撞自己的 409。
+postVerdict = null;
+postCalls = [];
+findButton(tree2, '用我的覆盖').props.onClick();
+await settle();
+await settle();
+assert.equal(postCalls.length, 1, '覆盖应只发一笔');
+assert.equal(JSON.parse(postCalls[0].body).baseMtimeMs, 1700000009999, '覆盖时必须用磁盘的 mtime 当基准');
+tree2 = rerender();
+assert.ok(!JSON.stringify(tree2).includes('文件在别处被改过'), '覆盖成功后冲突条应消失');
+
+// 16) 「用磁盘上的」：放弃本地改动，载入磁盘内容，并清掉脏标记。
+postVerdict = {
+  status: 409,
+  body: { error: '备忘录在别处被修改过', code: 'stale', content: '磁盘上的版本', mtimeMs: 1700000011111 },
+};
+findArea(tree2).props.onChange({ target: { value: '# A\n\n又改了一次\n' } });
+findArea(tree2).props.onBlur();
+await settle();
+await settle();
+tree2 = rerender();
+assert.ok(findButton(tree2, '用磁盘上的'), '冲突时应能放弃本地改动');
+findButton(tree2, '用磁盘上的').props.onClick();
+await settle();
+await settle();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲\n', '应回到磁盘上的内容');
+assert.ok(!JSON.stringify(tree2).includes('文件在别处被改过'), '载入后冲突条应消失');
+postVerdict = null;
+
+// 17) 「上一版」：读回备份内容并立刻写盘（走普通保存，没有第二套写路径）。
+loadMeta = { size: 20, limit: 1024 * 1024, hasBackup: true, mtimeMs: 1700000000000 };
+loadContent = '# A\n\n甲\n';
+tree2 = await renderLive();
+postCalls = [];
+findButton(tree2, '上一版').props.onClick();
+await settle();
+await settle();
+assert.equal(postCalls.length, 1, '恢复上一版应立刻落盘');
+assert.equal(JSON.parse(postCalls[0].body).content, '上一版内容', '写回的应是备份内容');
 
 console.log('client.test.mjs: 全部通过');
