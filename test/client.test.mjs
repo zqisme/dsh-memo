@@ -44,13 +44,13 @@ globalThis.fetch = async (url, options = {}) => {
     return {
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, exists: true, content: '上一版内容', path: '/home/u/.dsh/memo/memo.md.bak', mtimeMs: 1600000000000 }),
+      json: async () => ({ ok: true, exists: true, content: '上一版内容', path: '<home>/.dsh/memo/memo.md.bak', mtimeMs: 1600000000000 }),
     };
   }
   return {
     ok: true,
     status: 200,
-    json: async () => ({ ok: true, exists: true, content: loadContent, path: '/home/u/.dsh/memo/memo.md', ...loadMeta }),
+    json: async () => ({ ok: true, exists: true, content: loadContent, path: '<home>/.dsh/memo/memo.md', ...loadMeta }),
   };
 };
 
@@ -709,5 +709,79 @@ await settle();
 await settle();
 assert.equal(postCalls.length, 1, '恢复上一版应立刻落盘');
 assert.equal(JSON.parse(postCalls[0].body).content, '上一版内容', '写回的应是备份内容');
+
+// 18) 单节末尾紧邻下一节标题：直接打字不能把那个 `#` 吃掉。
+//     （回归：「逆向技能」这种空节里一打字，字贴到下一行标题前，标题从目录消失、
+//     本节终点随之后移、编辑区整段换成别处的文字 —— 用户看到的就是「一打字就跳」。）
+const { spliceSection, reanchorSection } = mod.__test;
+
+const twoSec = '# A\n\n# B\n\n乙\n';
+const rangeA = sectionRange(twoSec, 0);
+const spliced = spliceSection(twoSec, rangeA, '# A\n\na');
+assert.equal(spliced.text, '# A\n\na\n# B\n\n乙\n', '拼回时应在标题前补一个换行');
+assert.equal(spliced.separator, true);
+assert.equal(parseOutline(spliced.text).length, 2, '补完之后下一节标题仍是标题');
+assert.equal(parseOutline(spliced.text)[1].text, 'B');
+
+// 已经以换行结尾、最后一行只有空白、或本节本来就到文末：都不补，免得越积越多空行。
+assert.equal(spliceSection(twoSec, rangeA, '# A\n\na\n').separator, false, '以换行结尾时不补');
+assert.equal(spliceSection(twoSec, rangeA, '# A\n\n   ').separator, false, '纯空白行吃不掉标题（识别时会 trim），不必补');
+assert.equal(spliceSection(twoSec, sectionRange(twoSec, 1), '# B\n\n乙\nx').separator, false, '本节到文末时无需分隔');
+assert.equal(spliceSection(twoSec, null, '任意').text, '任意', '整篇模式原样收下');
+
+// 补过之后继续在同一行打字：视图末尾已经带着换行，第二笔不能再补一个
+// （否则每敲一个字就多一行）。
+const afterOne = spliced.text;
+const rangeAfter = sectionRange(afterOne, 0);
+const second = spliceSection(afterOne, rangeAfter, '# A\n\nab\n');
+assert.equal(second.separator, false, '第二笔不补');
+assert.equal(second.text, '# A\n\nab\n# B\n\n乙\n', '连打两个字不该多出空行');
+
+// 界面侧：空节末尾打字，视图停原地，切到整篇后标题还在。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# 逆向技能\n\n# workbuddy\n\n内容\n';
+tree2 = await renderLoaded();
+assert.equal(findArea(tree2).props.value, '# 逆向技能\n\n', '先看空的那一节');
+findArea(tree2).props.onChange({ target: { value: '# 逆向技能\n\n1' } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# 逆向技能\n\n1\n', '打完字编辑区还停在原地，不能整段换掉');
+findButton(tree2, '看整篇').props.onClick();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# 逆向技能\n\n1\n# workbuddy\n\n内容\n', '下一节标题不能被吃掉');
+assert.equal(parseOutline(findArea(tree2).props.value).length, 2, '目录不能少一条');
+
+// 19) 组字（拼音）期间不拼回：预编辑串不能当正文写进整篇。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# A\n\n甲\n';
+tree2 = await renderLoaded();
+findArea(tree2).props.onCompositionStart();
+findArea(tree2).props.onChange({ target: { value: '# A\n\n甲n' } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲\n', '组字中的 n 还只是预编辑串，不该进整篇');
+findArea(tree2).props.onCompositionEnd({ target: { value: '# A\n\n甲你' } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲你', '落字那一刻再拼回整篇');
+
+// 20) 在标题行最左边把 `# ` 挡掉：要按字符位置留在原地，不能整块换到后面另一节。
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# A\n\n甲\n\n# B\n\n乙\n';
+tree2 = await renderLoaded();
+flatten(tree2)
+  .find((node) => node.props && node.props.title === 'B' && typeof node.props.onClick === 'function')
+  .props.onClick();
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# B\n\n乙\n', '先切到 B 节');
+
+const brokenDoc = '# A\n\n甲\n\nx# B\n\n乙\n';
+const back = reanchorSection(brokenDoc, 8);
+assert.equal(back.index, 0, 'B 的标题被吃掉后应落到上一节 A');
+assert.equal(brokenDoc.slice(back.start, back.end), brokenDoc, 'A 的区间把被挡掉的那行也吃进来');
+assert.equal(reanchorSection('x\n', 0), null, '第一节标题被吃掉时没有可落的节');
+
+findArea(tree2).props.onChange({ target: { value: 'x# B\n\n乙\n' } });
+tree2 = rerender();
+const kept = findArea(tree2).props.value;
+assert.ok(kept.startsWith('# A'), '应留在原地那一节，而不是跳到后面的节');
+assert.ok(kept.includes('x# B'), '被挡掉的那一行还在正文里');
 
 console.log('client.test.mjs: 全部通过');
