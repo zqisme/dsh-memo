@@ -1,6 +1,6 @@
 {
   "name": "dsh-memo",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "DSH 极简备忘录：侧栏按钮 + 自动保存的 Markdown 便签，数据就是一个本机文件。",
   "type": "module",
   "license": "MIT",
