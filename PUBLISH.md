@@ -93,7 +93,7 @@ Markdown 便签。数据是**一个普通文件** `~/.dsh/memo/memo.md`，跟工
 
 ## 4. 自测
 
-```powershell
+```bash
 npm test                     # = 下面两条，CI 也走这一条
 node --check lib/index.js
 node --check lib/client.js
@@ -103,7 +103,7 @@ node test/client.test.mjs    # 工厂格式 / 槽位 / 默认单节 / 新建定�
 
 两个脚本都不启动 DSH、不碰真实数据（Host 自测写系统临时目录）。
 `.github/workflows/test.yml` 在 ubuntu 与 windows × Node 20/24 上跑同一套 —— 符号链接
-那条用例在 Windows 上没开开发者模式时会自动跳过（打印一行提示），Linux 上一定跑。
+那条用例在 Linux 上一定跑。
 
 ## 5. 上传 GitHub
 
@@ -128,26 +128,28 @@ node test/client.test.mjs    # 工厂格式 / 槽位 / 默认单节 / 新建定�
 
 **方式 A：直接从 GitHub 装（推荐，无需 clone）**
 
-```powershell
+```bash
 # 1) 确认/创建 profile（已存在会直接成功）
-dsh --profile web --from-default-profile web --dump-config > $null
+dsh --profile web --from-default-profile web --dump-config > /dev/null
 
 # 2) 从仓库装
 dsh plugin --profile web add "git+https://github.com/zqisme/dsh-memo.git"
 
 # 3) 登记进 bundle 清单（关键，漏了插件不会出现）
-node "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-memo\tools\patch-profile.mjs" "$env:USERPROFILE\.dsh\profiles\web\package.json"
+node "$HOME/.dsh/profiles/web/node_modules/dsh-memo/tools/patch-profile.mjs" \
+     "$HOME/.dsh/profiles/web/package.json"
 
 # 4) 重启
 dsh web
 ```
 
+
 **方式 B：先 clone 再 link（改代码时方便）**
 
-```powershell
-git clone https://github.com/zqisme/dsh-memo.git C:\path\to\dsh-memo
-dsh plugin --profile web add "link:C:/path/to/dsh-memo"
-node C:\path\to\dsh-memo\tools\patch-profile.mjs "$env:USERPROFILE\.dsh\profiles\web\package.json"
+```bash
+git clone https://github.com/zqisme/dsh-memo.git ~/src/dsh-memo
+dsh plugin --profile web add "link:$HOME/src/dsh-memo"
+node "$HOME/src/dsh-memo/tools/patch-profile.mjs" "$HOME/.dsh/profiles/web/package.json"
 dsh web
 ```
 
@@ -155,9 +157,9 @@ dsh web
 
 装完检查：
 
-```powershell
+```bash
 # 组合后的配置里应该出现 id: memo
-dsh --profile web --dump-config | Select-String -Pattern "dsh-memo" -Context 1,1
+dsh --profile web --dump-config | grep -n -A1 -B1 'dsh-memo'
 ```
 
 卸载：`dsh plugin --profile web remove dsh-memo`，再把 `dsh.profile.bundles` 里的 `"dsh-memo"` 删掉。
@@ -198,7 +200,6 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-memo" -Context 1,1
   `rename`，完成顺序不保证等于请求顺序，可能用旧内容覆盖新内容，而客户端两笔都算成功。
   关页面时的 `keepalive` 不排队（那一刻要的是尽量发出去）。
 - **落盘 0600**：私人笔记不该让同机其他用户读到；`rename` 会把 mode 带到目标文件。
-  Windows 上 mode 基本被忽略，行为不变。
 - **支持软链**：`memo.md` 是符号链接时先 `realpath` 再写，否则 `rename` 会把链接顶掉，
   按 README 建议的「软链到同步目录」会当场失效。断链直接 409，不吞。
 - **选中序号会钳位**（`clampSectionIndex`）：删标题后 `activeIndex` 可能越界，越界会让

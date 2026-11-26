@@ -20,7 +20,7 @@ DSH 的极简备忘录：左侧栏一个「备忘录」按钮，主面板一块�
 
 | 项 | 值 |
 |---|---|
-| 默认路径 | `~/.dsh/memo/memo.md`（Windows 即 `C:\Users\<你>\.dsh\memo\memo.md`） |
+| 默认路径 | `~/.dsh/memo/memo.md` |
 | 换成别处 | 启动前设环境变量 `DSH_MEMO_FILE=<绝对路径>` |
 | 上限 | 单文件 1 MiB（页脚显示 `320 KB / 1 MiB`，过 80% 标黄） |
 | 上一版 | 每次覆盖前把当前内容留成同目录的 `memo.md.bak`，只留一份；页脚「上一版」可读回 |
@@ -84,32 +84,36 @@ DSH 的极简备忘录：左侧栏一个「备忘录」按钮，主面板一块�
 
 **别的设备（从 GitHub 装，不用 clone）**
 
-```powershell
+```bash
+# 0. 用当前运行代的 dsh（本机 = $DSH_INSTALL_DIR/lib/bin.js）；已装且已登记的话下面三步都不必跑
+
 # 1. 确认/创建 profile（已存在会直接成功）
-dsh --profile web --from-default-profile web --dump-config > $null
+dsh --profile web --from-default-profile web --dump-config > /dev/null
 
 # 2. 从仓库装
 dsh plugin --profile web add "git+https://github.com/zqisme/dsh-memo.git"
 
 # 3. 登记到 bundle 清单（pnpm 只放 node_modules，这一步才会应用本包的 cordis.patch.yml）
-node "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-memo\tools\patch-profile.mjs" "$env:USERPROFILE\.dsh\profiles\web\package.json"
+node "$HOME/.dsh/profiles/web/node_modules/dsh-memo/tools/patch-profile.mjs" \
+     "$HOME/.dsh/profiles/web/package.json"
 ```
+
 
 然后**重启** `dsh web`：客户端 bundle 是启动时读取并缓存的，热改磁盘不会生效。
 
 **本机改代码时（link 方式，改完即生效只要重启）**
 
-```powershell
-$pr = "$env:USERPROFILE\.dsh\profiles\web"
-dsh plugin --profile web add "link:C:/path/to/dsh-memo"
-node C:/path/to/dsh-memo/tools/patch-profile.mjs "$pr\package.json"
+```bash
+pr="$HOME/.dsh/profiles/web"
+dsh plugin --profile web add "link:$HOME/文档/deepseek-harness/default-workspace/dsh-memo"
+node "$HOME/文档/deepseek-harness/default-workspace/dsh-memo/tools/patch-profile.mjs" "$pr/package.json"
 ```
 
 装完检查：`dsh --profile web --dump-config` 的组合配置里应该出现 `id: memo`。
 
 卸载：
 
-```powershell
+```bash
 dsh plugin --profile web remove dsh-memo
 # 再把 package.json 的 dsh.profile.bundles 里的 "dsh-memo" 删掉
 ```
@@ -159,7 +163,7 @@ curl / 脚本不带 token 也能读写；改用 `requestRejection` 之后，非 
 
 ## 自测
 
-```powershell
+```bash
 npm test                    # 等价于下面两条，CI 也是这么跑的
 node test/host.test.mjs     # 路由登记、读写往返、宿主信任层、载荷校验、0600、符号链接
 node test/client.test.mjs   # 工厂格式、槽位注册、默认单节、回到上次那一节、新建定位、写串行、目录键盘可达

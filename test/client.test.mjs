@@ -750,17 +750,25 @@ tree2 = rerender();
 assert.equal(findArea(tree2).props.value, '# 逆向技能\n\n1\n# workbuddy\n\n内容\n', '下一节标题不能被吃掉');
 assert.equal(parseOutline(findArea(tree2).props.value).length, 2, '目录不能少一条');
 
-// 19) 组字（拼音）期间不拼回：预编辑串不能当正文写进整篇。
+// 19) 组字（拼音）期间：预编辑串要原样显示，但不能当正文写进整篇。
+//     （回归：受控 textarea 不跟着走时，React 会把预编辑串抹回旧值 —— 输入法当场
+//     中断、光标飞到末尾，接着落的字全跑到这一节最后一行，标题再也改不成。）
 globalThis.window.localStorage.removeItem('dsh-memo:prefs');
 loadContent = '# A\n\n甲\n';
 tree2 = await renderLoaded();
 findArea(tree2).props.onCompositionStart();
 findArea(tree2).props.onChange({ target: { value: '# A\n\n甲n' } });
 tree2 = rerender();
-assert.equal(findArea(tree2).props.value, '# A\n\n甲\n', '组字中的 n 还只是预编辑串，不该进整篇');
+assert.equal(findArea(tree2).props.value, '# A\n\n甲n', '组字中的预编辑串要原样显示，不能被 React 抹回旧值');
+assert.equal(parseOutline(' # A\n\n甲\n').length, 1, '（对照）正文本身没被改动');
+
+postCalls = [];
 findArea(tree2).props.onCompositionEnd({ target: { value: '# A\n\n甲你' } });
 tree2 = rerender();
 assert.equal(findArea(tree2).props.value, '# A\n\n甲你', '落字那一刻再拼回整篇');
+findArea(tree2).props.onBlur(); // 失焦立刻落盘，不等 700ms 的自动保存
+await settle();
+assert.equal(JSON.parse(postCalls[0].body).content, '# A\n\n甲你', '写盘的是落字后的正文，预编辑串没进过正文');
 
 // 20) 在标题行最左边把 `# ` 挡掉：要按字符位置留在原地，不能整块换到后面另一节。
 globalThis.window.localStorage.removeItem('dsh-memo:prefs');
@@ -783,5 +791,39 @@ tree2 = rerender();
 const kept = findArea(tree2).props.value;
 assert.ok(kept.startsWith('# A'), '应留在原地那一节，而不是跳到后面的节');
 assert.ok(kept.includes('x# B'), '被挡掉的那一行还在正文里');
+
+// 21) 组字标志卡住（输入法漏发 compositionend）时，编辑区不能变成只读。
+//     （回归：标志挂住 → onChange 一律提前返回，受控 textarea 把刚敲的字当场收回，
+//     用户看到的就是「除了新建，什么内容都输不进去」，而按钮全都好使。）
+//     判据改成事件自带的 isComposing：它说没在组字，就照常拼回。
+const { eventIsComposing } = mod.__test;
+assert.equal(eventIsComposing({ nativeEvent: { isComposing: false } }), false);
+assert.equal(eventIsComposing({ nativeEvent: { isComposing: true } }), true);
+assert.equal(eventIsComposing({ isComposing: true }), true, '原生事件上也认');
+assert.equal(eventIsComposing({ target: {} }), null, '事件没带这个字段时交给调用处的兜底标志');
+
+globalThis.window.localStorage.removeItem('dsh-memo:prefs');
+loadContent = '# A\n\n甲\n';
+tree2 = await renderLoaded();
+findArea(tree2).props.onCompositionStart();
+findArea(tree2).props.onChange({ target: { value: '# A\n\n甲x' }, nativeEvent: { isComposing: false } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲x', '标志卡住时普通输入仍要写进去');
+
+// 按键事件同样能自证「没在组字」：清掉标志后，连不带 nativeEvent 的输入也照常收。
+findArea(tree2).props.onCompositionStart();
+findArea(tree2).props.onKeyDown({ key: 'a', nativeEvent: { isComposing: false } });
+findArea(tree2).props.onChange({ target: { value: '# A\n\n甲xy' } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲xy', '真实按键应把卡住的标志清掉');
+
+// 真在组字时（事件自报 isComposing: true）照旧不拼回：预编辑串只显示，不进正文。
+findArea(tree2).props.onChange({ target: { value: '# A\n\n甲xyn' }, nativeEvent: { isComposing: true } });
+tree2 = rerender();
+assert.equal(findArea(tree2).props.value, '# A\n\n甲xyn', '组字中的预编辑串要原样显示');
+postCalls = [];
+findArea(tree2).props.onBlur();
+await settle();
+assert.equal(JSON.parse(postCalls[0].body).content, '# A\n\n甲xy', '预编辑串没有被写进正文');
 
 console.log('client.test.mjs: 全部通过');
